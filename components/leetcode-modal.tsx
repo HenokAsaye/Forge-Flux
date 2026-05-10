@@ -49,12 +49,13 @@ export default function LeetCodeModal({ open, onSaved, onClose }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "validate", lcUser: normalized }),
       });
-      const body = (await res.json()) as { valid?: boolean; error?: string };
+      const body = (await res.json()) as { valid?: boolean; normalized?: string; error?: string };
       if (!res.ok) throw new Error(body.error ?? "Validation failed");
       if (!body.valid) throw new Error("Username not found on LeetCode.");
 
-      window.localStorage.setItem("forge_leetcode_user", normalized);
-      onSaved(normalized);
+      const finalName = body.normalized ?? normalized;
+      window.localStorage.setItem("forge_leetcode_user", finalName);
+      onSaved(finalName);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Validation failed");
     } finally {
