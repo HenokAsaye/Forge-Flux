@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply min-h-screen bg-zinc-950 text-zinc-100 antialiased;
+  background-image: linear-gradient(to bottom, #020617, #020617);
+}
+
+::selection {
+  background: rgba(16, 185, 129, 0.35);
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes sweep {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 200% 0%;
+  }
+}
+
+@keyframes hyperdrive-shift {
+  0% {
+    transform: perspective(1000px) rotateX(70deg) translateY(0);
+  }
+  100% {
+    transform: perspective(1000px) rotateX(70deg) translateY(56px);
+  }
+}
+
+@keyframes drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-120px, -80px, 0);
+  }
+}
+
+[data-vibe-theme="triton"] .vibe-base {
+  background: linear-gradient(to bottom, #020617, #020617);
+}
+
+[data-vibe-theme="hyperdrive"] .vibe-base {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(34, 211, 238, 0.14), transparent 32%),
+    radial-gradient(circle at 100% 0%, rgba(236, 72, 153, 0.12), transparent 32%),
+    #020202;
+}
+
+[data-vibe-theme="ghost"] .vibe-base {
+  background: linear-gradient(to bottom, #fafafa, #f4f4f5);
+}
+
+.vibe-grid {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.aurora-blob {
+  opacity: 0.35;
+  animation: drift 18s ease-in-out infinite alternate;
+}
+
+.aurora-indigo {
+  background: rgba(99, 102, 241, 0.9);
+}
+
+.aurora-emerald {
+  background: rgba(16, 185, 129, 0.9);
+  animation-delay: -4s;
+}
+
+.aurora-violet {
+  background: rgba(139, 92, 246, 0.86);
+  animation-delay: -8s;
+}
+
+.hyperdrive-grid {
+  transform-origin: 50% 100%;
+  background-image:
+    linear-gradient(rgba(34, 211, 238, 0.28) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(236, 72, 153, 0.22) 1px, transparent 1px);
+  background-size: 56px 56px;
+  animation: hyperdrive-shift 3.2s linear infinite;
+}
+
+.hyperdrive-starfield {
+  background-image: radial-gradient(2px 2px at 20% 20%, rgba(255, 255, 255, 0.8), transparent),
+    radial-gradient(2px 2px at 70% 30%, rgba(34, 211, 238, 0.85), transparent),
+    radial-gradient(2px 2px at 40% 80%, rgba(236, 72, 153, 0.8), transparent),
+    radial-gradient(2px 2px at 85% 75%, rgba(255, 255, 255, 0.75), transparent);
+  background-size: 420px 260px;
+  animation: drift 9s linear infinite;
+  opacity: 0.6;
+}
+
+.noise-overlay {
+  opacity: 0.05;
+  mix-blend-mode: soft-light;
+  filter: url(#vibe-noise);
+}
+
+.shimmer-border {
+  background:
+    linear-gradient(#0000, #0000) padding-box,
+    linear-gradient(120deg, rgba(16, 185, 129, 0.8), rgba(56, 189, 248, 0.75), rgba(236, 72, 153, 0.7), rgba(16, 185, 129, 0.8))
+      border-box;
+  background-size: 100% 100%, 220% 100%;
+  animation: sweep 5s linear infinite;
+}
+
+.glass-card {
+  background-color: rgb(15 23 42 / 0.4);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.glass-card:hover {
+  transform: translateY(-4px);
+  border-color: rgb(16 185 129 / 0.5);
+  box-shadow: 0 0 0 1px rgb(16 185 129 / 0.2), 0 16px 38px rgb(2 6 23 / 0.45);
+}
