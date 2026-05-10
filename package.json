@@ -12,6 +12,7 @@
     "@nivo/calendar": "^0.87.0",
     "@nivo/core": "^0.87.0",
     "@radix-ui/react-progress": "^1.1.8",
+    "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -22,6 +23,7 @@
     "react": "^18.3.1",
     "react-activity-calendar": "^3.2.0",
     "react-dom": "^18.3.1",
+    "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
