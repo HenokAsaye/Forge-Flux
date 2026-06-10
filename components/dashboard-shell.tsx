@@ -6,18 +6,27 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
   Line,
   LineChart,
   Pie,
   PieChart,
+  PolarAngleAxis,
+  PolarGrid,
   Radar,
   RadarChart,
+  RadialBar,
+  RadialBarChart,
   ResponsiveContainer,
   Tooltip as ReTooltip,
   XAxis,
   YAxis,
-  PolarGrid,
-  PolarAngleAxis,
 } from "recharts";
 import AICoach from "@/components/ai-coach";
 import LeetCodeModal from "@/components/leetcode-modal";
@@ -35,13 +44,22 @@ type SignalsResponse = {
   availableYears: number[];
   github: {
     login: string;
+    createdAt: string;
     calendarDays: Array<{ day: string; count: number }>;
     languages: Array<{ label: string; value: number; color?: string }>;
+    topLanguage: string | null;
+    totals: {
+      commits: number;
+      pullRequests: number;
+      contributions: number;
+      longestStreak: number;
+    };
   };
   leetcode: {
     username: string | null;
     calendar: Array<{ day: string; count: number }>;
     solvedByDifficulty: { easy: number; medium: number; hard: number };
+    acceptedTotal: number;
     languageProblemCount: Array<{ languageName: string; problemsSolved: number }>;
   };
   ratio: { commits: number; solves: number };
@@ -61,15 +79,31 @@ type SignalsResponse = {
   advice: string;
 };
 
+const CACHE_PREFIX = "forge_signals_v1_";
+const PERSONA_KEY = "forge_coach_persona";
+const PALETTE = ["#10b981", "#38bdf8", "#f59e0b", "#a855f7", "#ec4899", "#f43f5e", "#22d3ee", "#84cc16"];
+const DIFFICULTY_COLORS: Record<string, string> = { Easy: "#10b981", Medium: "#f59e0b", Hard: "#f43f5e" };
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 const FALLBACK_ACTIVITIES: Activity[] = [
   { date: new Date().toISOString().slice(0, 10), count: 0, level: 0 },
 ];
 
 function toCalendar(data: Array<{ day: string; count: number }>): Activity[] {
+  const counts = data.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day)).map((d) => d.count);
+  const max = Math.max(1, ...counts);
   const cleaned = data
     .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day))
-    .map((d) => ({ date: d.day, count: d.count, level: d.count > 0 ? 4 : 0 }));
+    .map((d) => ({
+      date: d.day,
+      count: d.count,
+      level: d.count <= 0 ? 0 : Math.min(4, Math.ceil((d.count / max) * 4)),
+    }));
   return cleaned.length ? cleaned : FALLBACK_ACTIVITIES;
+}
+
+function weekdayName(day: string) {
+  return new Date(`${day}T12:00:00Z`).getUTCDay();
 }
 
 export default function DashboardShell() {
@@ -84,13 +118,34 @@ export default function DashboardShell() {
   const [data, setData] = useState<SignalsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
 
   useEffect(() => {
     const key = window.localStorage.getItem("forge_leetcode_user");
     if (key?.trim()) setLcUser(key.trim());
+    const savedPersona = window.localStorage.getItem(PERSONA_KEY);
+    if (savedPersona) setPersona(savedPersona);
   }, []);
 
   useEffect(() => {
+    const cached = window.localStorage.getItem(CACHE_PREFIX + yearFromUrl);
+    if (cached) {
+      try {
+        setData(JSON.parse(cached) as SignalsResponse);
+      } catch {
+        window.localStorage.removeItem(CACHE_PREFIX + yearFromUrl);
+      }
+    } else {
+      setData(null);
+    }
+  }, [yearFromUrl]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PERSONA_KEY, persona);
+  }, [persona]);
+
+  useEffect(() => {
+    let cancelled = false;
     async function run() {
       if (!session?.accessToken) return;
       setLoading(true);
@@ -109,20 +164,75 @@ export default function DashboardShell() {
         });
         const body = (await res.json()) as SignalsResponse & { error?: string };
         if (!res.ok) throw new Error(body.error ?? "Signal fetch failed");
+        if (cancelled) return;
         setData(body);
+        setLastSynced(new Date().toLocaleTimeString());
+        window.localStorage.setItem(CACHE_PREFIX + yearFromUrl, JSON.stringify(body));
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Signal fetch failed");
+        if (!cancelled) setError(e instanceof Error ? e.message : "Signal fetch failed");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     void run();
+    return () => {
+      cancelled = true;
+    };
   }, [lcUser, persona, session?.accessToken, yearFromUrl]);
 
   const githubHeatmap = useMemo(() => (data ? toCalendar(data.github.calendarDays) : FALLBACK_ACTIVITIES), [data]);
   const leetcodeHeatmap = useMemo(() => (data ? toCalendar(data.leetcode.calendar) : FALLBACK_ACTIVITIES), [data]);
 
+  const cumulative = useMemo(() => {
+    let g = 0;
+    let l = 0;
+    return (data?.charts.monthly ?? []).map((m) => {
+      g += m.github;
+      l += m.leetcode;
+      return { month: m.month, github: g, leetcode: l };
+    });
+  }, [data]);
+
+  const weekdayData = useMemo(() => {
+    const buckets = WEEKDAYS.map((day) => ({ day, github: 0, leetcode: 0 }));
+    data?.github.calendarDays.forEach((d) => {
+      buckets[weekdayName(d.day)].github += d.count;
+    });
+    data?.leetcode.calendar.forEach((d) => {
+      buckets[weekdayName(d.day)].leetcode += d.count;
+    });
+    return buckets;
+  }, [data]);
+
+  const ghLanguages = useMemo(
+    () =>
+      (data?.github.languages ?? [])
+        .slice(0, 6)
+        .map((l, i) => ({ name: l.label, value: l.value, color: l.color ?? PALETTE[i % PALETTE.length] })),
+    [data],
+  );
+
+  const lcLanguages = useMemo(
+    () =>
+      [...(data?.leetcode.languageProblemCount ?? [])]
+        .sort((a, b) => b.problemsSolved - a.problemsSolved)
+        .slice(0, 6)
+        .map((l) => ({ name: l.languageName, value: l.problemsSolved })),
+    [data],
+  );
+
+  const difficultyBars = useMemo(
+    () => (data?.charts.difficulty ?? []).map((d) => ({ ...d, color: DIFFICULTY_COLORS[d.name] ?? "#38bdf8" })),
+    [data],
+  );
+
+  const intensityGauge = useMemo(
+    () => [{ name: "Intensity", value: data?.metrics.intensityScore ?? 0, fill: "#10b981" }],
+    [data],
+  );
+
   const availableYears = data?.availableYears ?? [yearFromUrl];
+  const showSkeleton = loading && !data;
 
   function changeYear(year: string) {
     const params = new URLSearchParams(search.toString());
@@ -131,7 +241,7 @@ export default function DashboardShell() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 pb-12 pt-28 sm:px-6">
+    <div className="mx-auto max-w-7xl space-y-6 px-4 pb-16 pt-28 sm:px-6">
       <LeetCodeModal
         open={modalOpen}
         onSaved={(u) => {
@@ -180,11 +290,17 @@ export default function DashboardShell() {
                 Add LeetCode (handle or URL)
               </button>
             ) : null}
-            <SyncDot label="GitHub" on />
-            <SyncDot label="LeetCode" on={Boolean(lcUser)} />
+            <SyncDot label="GitHub" on busy={loading} />
+            <SyncDot label="LeetCode" on={Boolean(lcUser)} busy={loading && Boolean(lcUser)} />
           </div>
         </CardContent>
       </Card>
+
+      {lastSynced ? (
+        <p className="-mt-2 text-right text-xs text-slate-500">
+          {loading ? "Refreshing live data…" : `Last synced ${lastSynced}`}
+        </p>
+      ) : null}
 
       {error ? (
         <Card className="border-rose-500/40 bg-rose-950/30">
@@ -192,110 +308,308 @@ export default function DashboardShell() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <SignalCard label="Intensity Score" value={data ? `${data.metrics.intensityScore}%` : "--"} />
-        <SignalCard label="Logic AC Rate" value={data ? String(data.metrics.logicAcRate) : "--"} />
-        <SignalCard label="Build Velocity" value={data ? String(data.metrics.buildVelocity) : "--"} />
-        <SignalCard label="Primary Stack" value={data?.metrics.primaryStack ?? "--"} />
+      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <SignalCard label="Intensity Score" value={data ? `${data.metrics.intensityScore}%` : "--"} accent="emerald" delay={0} />
+        <SignalCard label="Logic AC Rate" value={data ? String(data.metrics.logicAcRate) : "--"} accent="amber" delay={0.04} />
+        <SignalCard label="Build Velocity" value={data ? String(data.metrics.buildVelocity) : "--"} accent="sky" delay={0.08} />
+        <SignalCard label="Primary Stack" value={data?.metrics.primaryStack ?? "--"} accent="violet" delay={0.12} />
+        <SignalCard label="Longest Streak" value={data ? `${data.github.totals.longestStreak}d` : "--"} accent="emerald" delay={0.16} />
+        <SignalCard label="Contributions" value={data ? String(data.github.totals.contributions) : "--"} accent="sky" delay={0.2} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="border-white/10 bg-slate-900/40 lg:col-span-2">
-          <CardHeader><CardTitle className="text-slate-100">GitHub Pro Graph</CardTitle></CardHeader>
-          <CardContent>{loading ? <SkeletonBlock /> : <ActivityCalendar data={githubHeatmap} blockSize={12} blockMargin={4} theme={{ dark: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"], light: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"] }} colorScheme="dark" />}</CardContent>
-        </Card>
-        <Card className="border-white/10 bg-slate-900/40">
-          <CardHeader><CardTitle className="text-slate-100">Commits vs Solves</CardTitle></CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-3xl font-bold text-slate-100">{data ? `${data.ratio.commits} : ${data.ratio.solves}` : "-- : --"}</p>
-            <p className="text-sm text-slate-400">Selected year ratio</p>
-            {data ? (
-              <p className="text-xs text-slate-500">
-                {data.metrics.weekendWarrior ? "Weekend Warrior" : "Weekday Builder"} · Deep Work Index {data.metrics.deepWorkIndex}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
+        <ChartCard title="GitHub Contribution Graph" className="lg:col-span-2" delay={0}>
+          {showSkeleton ? (
+            <SkeletonBlock />
+          ) : (
+            <ActivityCalendar
+              data={githubHeatmap}
+              blockSize={12}
+              blockMargin={4}
+              theme={{ dark: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"], light: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"] }}
+              colorScheme="dark"
+            />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Intensity Gauge" delay={0.05}>
+          <div className="relative h-44">
+            <ResponsiveContainer width="100%" height="100%">
+              <RadialBarChart innerRadius="72%" outerRadius="100%" data={intensityGauge} startAngle={90} endAngle={-270}>
+                <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
+                <RadialBar background={{ fill: "#1e293b" }} dataKey="value" cornerRadius={12} />
+              </RadialBarChart>
+            </ResponsiveContainer>
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-3xl font-bold text-emerald-300">{data?.metrics.intensityScore ?? 0}%</span>
+              <span className="text-xs text-slate-400">active days</span>
+            </div>
+          </div>
+          <p className="mt-2 text-center text-xs text-slate-400">
+            {data?.metrics.weekendWarrior ? "Weekend Warrior" : "Weekday Builder"} · Deep Work {data?.metrics.deepWorkIndex ?? 0}
+          </p>
+        </ChartCard>
       </div>
 
-      <Card className="border-white/10 bg-slate-900/40">
-        <CardHeader><CardTitle className="text-slate-100">LeetCode Pro Graph</CardTitle></CardHeader>
-        <CardContent>
-          {loading ? <SkeletonBlock /> : <ActivityCalendar data={leetcodeHeatmap} blockSize={12} blockMargin={4} theme={{ dark: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"], light: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"] }} colorScheme="dark" />}
-          {!lcUser ? <p className="mt-3 text-sm text-slate-400">LeetCode is optional. Add your handle or profile URL to compare solve trends.</p> : null}
-        </CardContent>
-      </Card>
+      <ChartCard title="LeetCode Submission Graph" delay={0}>
+        {showSkeleton ? (
+          <SkeletonBlock />
+        ) : (
+          <ActivityCalendar
+            data={leetcodeHeatmap}
+            blockSize={12}
+            blockMargin={4}
+            theme={{ dark: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"], light: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"] }}
+            colorScheme="dark"
+          />
+        )}
+        {!lcUser ? <p className="mt-3 text-sm text-slate-400">LeetCode is optional. Add your handle or profile URL to compare solve trends.</p> : null}
+      </ChartCard>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Monthly Activity" delay={0}>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data?.charts.monthly ?? []}>
+                <defs>
+                  <linearGradient id="ghFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.5} />
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="lcFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.5} />
+                    <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="month" stroke="#64748b" fontSize={11} />
+                <YAxis stroke="#64748b" fontSize={11} />
+                <ReTooltip content={<DarkTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Area type="monotone" name="GitHub" dataKey="github" stroke="#10b981" strokeWidth={2} fill="url(#ghFill)" />
+                <Area type="monotone" name="LeetCode" dataKey="leetcode" stroke="#f59e0b" strokeWidth={2} fill="url(#lcFill)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+
+        <ChartCard title="Cumulative Growth" delay={0.05}>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={cumulative}>
+                <CartesianGrid stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="month" stroke="#64748b" fontSize={11} />
+                <YAxis stroke="#64748b" fontSize={11} />
+                <ReTooltip content={<DarkTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line type="monotone" name="GitHub" dataKey="github" stroke="#38bdf8" strokeWidth={2.5} dot={false} />
+                <Line type="monotone" name="LeetCode" dataKey="leetcode" stroke="#a855f7" strokeWidth={2.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Activity by Weekday" delay={0}>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={weekdayData}>
+                <CartesianGrid stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="day" stroke="#64748b" fontSize={11} />
+                <YAxis stroke="#64748b" fontSize={11} />
+                <ReTooltip content={<DarkTooltip />} cursor={{ fill: "rgba(148,163,184,0.08)" }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar name="GitHub" dataKey="github" fill="#10b981" radius={[4, 4, 0, 0]} />
+                <Bar name="LeetCode" dataKey="leetcode" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+
+        <ChartCard title="Growth Distribution" delay={0.05}>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <RadarChart data={data?.charts.radar ?? []}>
+                <PolarGrid stroke="#334155" />
+                <PolarAngleAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                <Radar dataKey="value" stroke="#10b981" fill="#10b981" fillOpacity={0.4} />
+                <ReTooltip content={<DarkTooltip />} />
+              </RadarChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <ChartCard title="Top Languages (GitHub)" delay={0}>
+          <div className="h-60">
+            {ghLanguages.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={ghLanguages} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80} paddingAngle={2}>
+                    {ghLanguages.map((l) => (
+                      <Cell key={l.name} fill={l.color} />
+                    ))}
+                  </Pie>
+                  <ReTooltip content={<DarkTooltip />} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState label="No language data" />
+            )}
+          </div>
+        </ChartCard>
+
+        <ChartCard title="Solves by Difficulty" delay={0.05}>
+          <div className="h-60">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={difficultyBars} layout="vertical">
+                <CartesianGrid stroke="#1e293b" horizontal={false} />
+                <XAxis type="number" stroke="#64748b" fontSize={11} />
+                <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} width={60} />
+                <ReTooltip content={<DarkTooltip />} cursor={{ fill: "rgba(148,163,184,0.08)" }} />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                  {difficultyBars.map((d) => (
+                    <Cell key={d.name} fill={d.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+
+        <ChartCard title="Top Languages (LeetCode)" delay={0.1}>
+          <div className="h-60">
+            {lcLanguages.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={lcLanguages} layout="vertical">
+                  <CartesianGrid stroke="#1e293b" horizontal={false} />
+                  <XAxis type="number" stroke="#64748b" fontSize={11} />
+                  <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} width={72} />
+                  <ReTooltip content={<DarkTooltip />} cursor={{ fill: "rgba(148,163,184,0.08)" }} />
+                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                    {lcLanguages.map((l, i) => (
+                      <Cell key={l.name} fill={PALETTE[i % PALETTE.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState label="Link LeetCode to see data" />
+            )}
+          </div>
+        </ChartCard>
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <AICoach advice={data?.advice ?? ""} persona={persona} onPersonaChange={setPersona} loading={loading} />
+          <AICoach advice={data?.advice ?? ""} persona={persona} onPersonaChange={setPersona} loading={showSkeleton} />
         </div>
-        <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl">
-          <CardHeader><CardTitle className="text-slate-100">Growth Distribution</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="h-40">
-              <ResponsiveContainer width="100%" height="100%">
-                <RadarChart data={data?.charts.radar ?? []}>
-                  <PolarGrid stroke="#334155" />
-                  <PolarAngleAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 10 }} />
-                  <Radar dataKey="value" stroke="#10b981" fill="#10b981" fillOpacity={0.4} />
-                </RadarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="h-40">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={data?.charts.difficulty ?? []}
-                    dataKey="value"
-                    nameKey="name"
-                    outerRadius={55}
-                    fill="#8884d8"
-                    label
-                  />
-                  <ReTooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+        <ChartCard title="Commits vs Solves" delay={0}>
+          <p className="text-4xl font-bold text-slate-100">
+            {data ? `${data.ratio.commits} : ${data.ratio.solves}` : "-- : --"}
+          </p>
+          <p className="mt-1 text-sm text-slate-400">Selected year ratio</p>
+          <div className="mt-4 space-y-3">
+            <RatioBar label="Commits" value={data?.ratio.commits ?? 0} total={(data?.ratio.commits ?? 0) + (data?.ratio.solves ?? 0)} color="#10b981" />
+            <RatioBar label="Solves" value={data?.ratio.solves ?? 0} total={(data?.ratio.commits ?? 0) + (data?.ratio.solves ?? 0)} color="#f59e0b" />
+          </div>
+        </ChartCard>
       </div>
-
-      <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl">
-        <CardHeader><CardTitle className="text-slate-100">Activity Line Chart</CardTitle></CardHeader>
-        <CardContent className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data?.charts.monthly ?? []}>
-              <XAxis dataKey="month" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" />
-              <ReTooltip />
-              <Line type="monotone" dataKey="github" stroke="#10b981" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="leetcode" stroke="#f59e0b" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
     </div>
   );
 }
 
-function SyncDot({ label, on }: { label: string; on: boolean }) {
+function ChartCard({
+  title,
+  children,
+  className,
+  delay = 0,
+}: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+  delay?: number;
+}) {
   return (
-    <span className="inline-flex items-center gap-2 text-slate-300 text-sm">
-      <span className={`h-2.5 w-2.5 rounded-full ${on ? "bg-emerald-400 animate-pulse" : "bg-slate-600"}`} />
-      {label}
-    </span>
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay }}
+      className={className}
+    >
+      <Card className="h-full border-white/10 bg-slate-900/45 backdrop-blur-xl transition hover:border-emerald-400/30">
+        <CardHeader>
+          <CardTitle className="text-slate-100">{title}</CardTitle>
+        </CardHeader>
+        <CardContent>{children}</CardContent>
+      </Card>
+    </motion.div>
   );
 }
 
-function SignalCard({ label, value }: { label: string; value: string }) {
+const ACCENTS: Record<string, string> = {
+  emerald: "text-emerald-300",
+  amber: "text-amber-300",
+  sky: "text-sky-300",
+  violet: "text-violet-300",
+};
+
+function SignalCard({ label, value, accent, delay }: { label: string; value: string; accent: string; delay: number }) {
   return (
-    <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl">
-      <CardContent className="p-5">
-        <p className="text-xs uppercase tracking-[0.14em] text-slate-400">{label}</p>
-        <p className="mt-2 text-2xl font-semibold text-slate-100">{value}</p>
-      </CardContent>
-    </Card>
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay }}>
+      <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl transition hover:border-emerald-400/30">
+        <CardContent className="p-5">
+          <p className="text-xs uppercase tracking-[0.14em] text-slate-400">{label}</p>
+          <p className={`mt-2 text-2xl font-semibold ${ACCENTS[accent] ?? "text-slate-100"}`}>{value}</p>
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+}
+
+function RatioBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-400">
+        <span>{label}</span>
+        <span>{value}</span>
+      </div>
+      <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; color?: string }>; label?: string }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border border-white/10 bg-slate-950/90 px-3 py-2 text-xs shadow-xl backdrop-blur">
+      {label ? <p className="mb-1 font-medium text-slate-200">{label}</p> : null}
+      {payload.map((p) => (
+        <p key={p.name} className="flex items-center gap-2 text-slate-300">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color ?? "#10b981" }} />
+          {p.name}: <span className="font-semibold text-slate-100">{p.value}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function EmptyState({ label }: { label: string }) {
+  return <div className="grid h-full place-items-center text-sm text-slate-500">{label}</div>;
+}
+
+function SyncDot({ label, on, busy }: { label: string; on: boolean; busy?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-2 text-sm text-slate-300">
+      <span className={`h-2.5 w-2.5 rounded-full ${on ? "bg-emerald-400" : "bg-slate-600"} ${busy ? "animate-pulse" : ""}`} />
+      {label}
+    </span>
   );
 }
 
