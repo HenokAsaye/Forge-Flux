@@ -7,7 +7,6 @@ import { useVibe } from "./VibeProvider";
 export default function BackgroundEngine() {
   const { vibe } = useVibe();
 
-  // for Triton spotlight tracking
   const mx = useMotionValue(50);
   const my = useMotionValue(50);
   const sx = useSpring(mx, { damping: 20, stiffness: 150 });
