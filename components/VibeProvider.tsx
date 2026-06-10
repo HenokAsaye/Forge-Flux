@@ -31,7 +31,6 @@ export default function VibeProvider({ children }: { children: React.ReactNode }
     try {
       localStorage.setItem("ff:vibe", vibe);
     } catch (e) {}
-    // set color-scheme/body attrs for CSS hooks
     document.documentElement.dataset.vibe = vibe;
   }, [vibe]);
 
