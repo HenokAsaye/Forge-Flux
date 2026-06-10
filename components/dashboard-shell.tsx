@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/select";
 
 type SignalsResponse = {
-  year: number;
+  year: number | "all";
   availableYears: number[];
   github: {
     login: string;
@@ -89,6 +89,18 @@ const FALLBACK_ACTIVITIES: Activity[] = [
   { date: new Date().toISOString().slice(0, 10), count: 0, level: 0 },
 ];
 
+function fullYearDays(data: Array<{ day: string; count: number }>, year: number) {
+  const map = new Map(data.map((d) => [d.day, d.count]));
+  const out: Array<{ day: string; count: number }> = [];
+  const start = Date.UTC(year, 0, 1);
+  const end = Date.UTC(year, 11, 31);
+  for (let t = start; t <= end; t += 86400000) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    out.push({ day, count: map.get(day) ?? 0 });
+  }
+  return out;
+}
+
 function toCalendar(data: Array<{ day: string; count: number }>): Activity[] {
   const counts = data.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day)).map((d) => d.count);
   const max = Math.max(1, ...counts);
@@ -110,7 +122,7 @@ export default function DashboardShell() {
   const { data: session } = useSession();
   const router = useRouter();
   const search = useSearchParams();
-  const yearFromUrl = Number(search.get("year")) || new Date().getUTCFullYear();
+  const yearParam = search.get("year") === "all" ? "all" : Number(search.get("year")) || new Date().getUTCFullYear();
 
   const [lcUser, setLcUser] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -119,6 +131,13 @@ export default function DashboardShell() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ gh: string; lc?: string } | null>(null);
+  const [ghQuery, setGhQuery] = useState("");
+  const [lcQuery, setLcQuery] = useState("");
+
+  const targetGh = viewing?.gh;
+  const activeLc = viewing ? viewing.lc ?? null : lcUser;
+  const cacheKey = `${CACHE_PREFIX}${targetGh ?? "me"}_${yearParam}`;
 
   useEffect(() => {
     const key = window.localStorage.getItem("forge_leetcode_user");
@@ -128,17 +147,17 @@ export default function DashboardShell() {
   }, []);
 
   useEffect(() => {
-    const cached = window.localStorage.getItem(CACHE_PREFIX + yearFromUrl);
+    const cached = window.localStorage.getItem(cacheKey);
     if (cached) {
       try {
         setData(JSON.parse(cached) as SignalsResponse);
       } catch {
-        window.localStorage.removeItem(CACHE_PREFIX + yearFromUrl);
+        window.localStorage.removeItem(cacheKey);
       }
     } else {
       setData(null);
     }
-  }, [yearFromUrl]);
+  }, [cacheKey]);
 
   useEffect(() => {
     window.localStorage.setItem(PERSONA_KEY, persona);
@@ -157,9 +176,10 @@ export default function DashboardShell() {
           body: JSON.stringify({
             mode: "fetch",
             ghToken: session.accessToken,
-            lcUser: lcUser ?? undefined,
+            ghLogin: targetGh,
+            lcUser: activeLc ?? undefined,
             persona,
-            year: yearFromUrl,
+            year: yearParam,
           }),
         });
         const body = (await res.json()) as SignalsResponse & { error?: string };
@@ -167,7 +187,7 @@ export default function DashboardShell() {
         if (cancelled) return;
         setData(body);
         setLastSynced(new Date().toLocaleTimeString());
-        window.localStorage.setItem(CACHE_PREFIX + yearFromUrl, JSON.stringify(body));
+        window.localStorage.setItem(cacheKey, JSON.stringify(body));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Signal fetch failed");
       } finally {
@@ -178,10 +198,31 @@ export default function DashboardShell() {
     return () => {
       cancelled = true;
     };
-  }, [lcUser, persona, session?.accessToken, yearFromUrl]);
+  }, [activeLc, persona, session?.accessToken, yearParam, targetGh, cacheKey]);
 
-  const githubHeatmap = useMemo(() => (data ? toCalendar(data.github.calendarDays) : FALLBACK_ACTIVITIES), [data]);
-  const leetcodeHeatmap = useMemo(() => (data ? toCalendar(data.leetcode.calendar) : FALLBACK_ACTIVITIES), [data]);
+  function runSearch() {
+    const gh = ghQuery.trim().replace(/^@/, "");
+    if (!gh) return;
+    setViewing({ gh, lc: lcQuery.trim() || undefined });
+  }
+
+  function resetToMe() {
+    setViewing(null);
+    setGhQuery("");
+    setLcQuery("");
+  }
+
+  const githubHeatmap = useMemo(() => {
+    if (!data) return FALLBACK_ACTIVITIES;
+    const days = yearParam === "all" ? data.github.calendarDays : fullYearDays(data.github.calendarDays, yearParam);
+    return toCalendar(days);
+  }, [data, yearParam]);
+
+  const leetcodeHeatmap = useMemo(() => {
+    if (!data) return FALLBACK_ACTIVITIES;
+    const days = yearParam === "all" ? data.leetcode.calendar : fullYearDays(data.leetcode.calendar, yearParam);
+    return toCalendar(days);
+  }, [data, yearParam]);
 
   const cumulative = useMemo(() => {
     let g = 0;
@@ -231,7 +272,7 @@ export default function DashboardShell() {
     [data],
   );
 
-  const availableYears = data?.availableYears ?? [yearFromUrl];
+  const availableYears = data?.availableYears ?? [typeof yearParam === "number" ? yearParam : new Date().getUTCFullYear()];
   const showSkeleton = loading && !data;
 
   function changeYear(year: string) {
@@ -254,34 +295,51 @@ export default function DashboardShell() {
       <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl">
         <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div className="flex items-center gap-3">
-            {session?.user?.image ? (
+            {!viewing && session?.user?.image ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={session.user.image} alt="avatar" className="h-11 w-11 rounded-full border border-white/20" />
             ) : (
-              <div className="h-11 w-11 rounded-full bg-slate-800" />
+              <div className="grid h-11 w-11 place-items-center rounded-full border border-white/20 bg-slate-800 text-sm font-semibold text-slate-300">
+                {(data?.github.login ?? "?").slice(0, 1).toUpperCase()}
+              </div>
             )}
             <div>
-              <p className="font-semibold text-slate-100">{session?.user?.name ?? "Developer"}</p>
+              <p className="font-semibold text-slate-100">
+                {viewing ? `Viewing @${viewing.gh}` : session?.user?.name ?? "Developer"}
+              </p>
               <p className="text-sm text-slate-400">@{data?.github.login ?? "loading"}</p>
             </div>
+            {viewing ? (
+              <button
+                type="button"
+                onClick={resetToMe}
+                className="ml-2 rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300 transition hover:border-emerald-400/50"
+              >
+                Back to my dashboard
+              </button>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-3">
             <div className="w-36">
-              <Select value={String(yearFromUrl)} onValueChange={changeYear}>
+              <Select value={yearParam === "all" ? "all" : String(yearParam)} onValueChange={changeYear}>
                 <SelectTrigger>
                   <SelectValue placeholder="Year" />
                 </SelectTrigger>
                 <SelectContent>
-                  {availableYears.map((y) => (
-                    <SelectItem key={y} value={String(y)}>
-                      {y}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">All Time</SelectItem>
+                  {availableYears
+                    .slice()
+                    .sort((a, b) => b - a)
+                    .map((y) => (
+                      <SelectItem key={y} value={String(y)}>
+                        {y}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
-            {!lcUser ? (
+            {!viewing && !lcUser ? (
               <button
                 type="button"
                 onClick={() => setModalOpen(true)}
@@ -291,8 +349,46 @@ export default function DashboardShell() {
               </button>
             ) : null}
             <SyncDot label="GitHub" on busy={loading} />
-            <SyncDot label="LeetCode" on={Boolean(lcUser)} busy={loading && Boolean(lcUser)} />
+            <SyncDot label="LeetCode" on={Boolean(activeLc)} busy={loading && Boolean(activeLc)} />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-white/10 bg-slate-900/45 backdrop-blur-xl">
+        <CardContent className="flex flex-wrap items-end gap-3 p-5">
+          <div className="flex-1 min-w-[180px]">
+            <label className="text-xs uppercase tracking-[0.14em] text-slate-400">GitHub username</label>
+            <div className="mt-1 flex items-center gap-2 rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 focus-within:border-emerald-400/60">
+              <SearchIcon />
+              <input
+                value={ghQuery}
+                onChange={(e) => setGhQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && runSearch()}
+                placeholder="e.g. torvalds"
+                className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+              />
+            </div>
+          </div>
+          <div className="flex-1 min-w-[180px]">
+            <label className="text-xs uppercase tracking-[0.14em] text-slate-400">LeetCode username (optional)</label>
+            <div className="mt-1 flex items-center gap-2 rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 focus-within:border-emerald-400/60">
+              <SearchIcon />
+              <input
+                value={lcQuery}
+                onChange={(e) => setLcQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && runSearch()}
+                placeholder="e.g. neetcode"
+                className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={runSearch}
+            className="rounded-lg border border-emerald-400/50 bg-emerald-500/10 px-5 py-2 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+          >
+            View profile
+          </button>
         </CardContent>
       </Card>
 
@@ -322,13 +418,15 @@ export default function DashboardShell() {
           {showSkeleton ? (
             <SkeletonBlock />
           ) : (
-            <ActivityCalendar
-              data={githubHeatmap}
-              blockSize={12}
-              blockMargin={4}
-              theme={{ dark: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"], light: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"] }}
-              colorScheme="dark"
-            />
+            <div className="overflow-x-auto pb-2">
+              <ActivityCalendar
+                data={githubHeatmap}
+                blockSize={12}
+                blockMargin={4}
+                theme={{ dark: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"], light: ["#0f172a", "#064e3b", "#065f46", "#047857", "#10b981"] }}
+                colorScheme="dark"
+              />
+            </div>
           )}
         </ChartCard>
 
@@ -355,15 +453,17 @@ export default function DashboardShell() {
         {showSkeleton ? (
           <SkeletonBlock />
         ) : (
-          <ActivityCalendar
-            data={leetcodeHeatmap}
-            blockSize={12}
-            blockMargin={4}
-            theme={{ dark: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"], light: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"] }}
-            colorScheme="dark"
-          />
+          <div className="overflow-x-auto pb-2">
+            <ActivityCalendar
+              data={leetcodeHeatmap}
+              blockSize={12}
+              blockMargin={4}
+              theme={{ dark: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"], light: ["#0f172a", "#78350f", "#92400e", "#b45309", "#f59e0b"] }}
+              colorScheme="dark"
+            />
+          </div>
         )}
-        {!lcUser ? <p className="mt-3 text-sm text-slate-400">LeetCode is optional. Add your handle or profile URL to compare solve trends.</p> : null}
+        {!activeLc ? <p className="mt-3 text-sm text-slate-400">LeetCode is optional. Add your handle or profile URL to compare solve trends.</p> : null}
       </ChartCard>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -602,6 +702,15 @@ function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: A
 
 function EmptyState({ label }: { label: string }) {
   return <div className="grid h-full place-items-center text-sm text-slate-500">{label}</div>;
+}
+
+function SearchIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-slate-500">
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
 }
 
 function SyncDot({ label, on, busy }: { label: string; on: boolean; busy?: boolean }) {
