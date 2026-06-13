@@ -18,15 +18,19 @@ export const authOptions: NextAuthOptions = {
     maxAge: 30 * 24 * 60 * 60,
   },
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, profile }) {
       if (account?.access_token) {
         token.accessToken = account.access_token;
+      }
+      if (profile) {
+        token.login = (profile as any).login;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.accessToken = token.accessToken;
+        (session.user as any).login = token.login;
       }
       return session;
     },
