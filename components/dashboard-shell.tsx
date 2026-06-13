@@ -29,6 +29,7 @@ import {
   YAxis,
 } from "recharts";
 import AICoach from "@/components/ai-coach";
+import RecommendationsPanel from "@/components/recommendations-panel";
 import LeetCodeModal from "@/components/leetcode-modal";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -618,6 +619,8 @@ export default function DashboardShell() {
           </div>
         </ChartCard>
       </div>
+
+      <RecommendationsPanel token={session?.accessToken} ghLogin={(session?.user as any)?.login ?? data?.github.login} />
     </div>
   );
 }
